@@ -1,0 +1,445 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r Library Import, message=FALSE}
+#Membaca file format .csv
+library(readr)
+
+#Membaca file format .xlsx
+library(readxl)
+
+#Mengubah format text menjadi date
+library(lubridate)
+
+#Membersihkan data
+library(tidyr)
+
+#Time Series, Plot ACF, PACF, Model ARIMA dan ADF test
+library(tseries)
+
+#Uji signifikansi koefisien parameter
+library(lmtest)
+
+#Untuk Forecasting
+library(forecast)
+
+#Untuk membuat plot
+library(ggplot2)
+
+#Untuk memeriksa adanya sifat keheteroskedastisan pada data
+library(FinTS)
+
+#Model GARCH
+library(fGarch)
+```
+
+# EDA (Exploratory Data Analysis)
+
+```{r EDA}
+#Input data
+data <- read_excel("data.xlsx")
+
+#Plot data
+plot(data$Month, data$Deaths, type = "l", ylab = "Jumlah Kematian",
+xlab = "Bulan", main = "Grafik Jumlah Kematian di AS Tahun 1999-2020")
+abline(h = mean(data$Deaths), lwd = 2, lty = 2, col = "red")
+```
+
+```{r Statistika Deskriptif}
+summary(data$Deaths)
+```
+
+```{r Sari Numerik}
+summary(data)
+```
+
+```{r ACF}
+acf(data$Deaths, main = "Grafik ACF Data", lag.max = 48)
+```
+Perhatikan bahwa terdapat pola musiman pada data dengan periode 12 bulan (satu tahun).
+
+# Persiapan Data
+
+Pandemi Covid-19 meningkatkan jumlah kematian pada AS pada tahun 2020. Untuk memprediksi nilai kematian pada tahun 2020 tanpa Covid-19, maka data time series yang akan digunakan untuk membentuk model adalah data dari 1999 hingga 2019.
+
+```{r}
+lgth <- length(data$Month)-12
+nocovid <- ts(data$Deaths[1: lgth], frequency = 12)
+plot(nocovid)
+```
+
+```{r Plot per subseries}
+#Plot setiap sub-series; bulan dalam 1 tahun
+ggsubseriesplot(nocovid, main = "Grafik Data Jumlah Kematian Per Bulan",
+                ylab = "Jumlah Kematian", xlab = "Bulan")
+```
+
+```{r Decompose}
+#Plot data yang telah didekomposisi
+plot(decompose(nocovid), xlab = "Waktu")
+```
+
+```{r Test Train Set}
+#Membuat data set training dan validation
+
+#Training
+train <- nocovid[1:192]
+
+#Validation
+test<- nocovid[193:240]
+```
+
+```{r BM Rataan Data}
+#Model Rataan Data
+bm <- mean(train) #basemodel
+
+#Performa Base Model
+
+#In-Sample Error
+
+  #Root Mean Square Error (RMSE)
+print("Nilai RMSE - In Sample")
+(rmse_train <- mean((train - bm)^2)^0.5)
+  
+  #Mean Absolute Percentage Error (MAPE) 
+print('Nilai MAPE - In Sample')
+(mape_train <- mean(abs((train - bm))/train))
+
+#Out-of-Sample Error
+
+  #Root Mean Square Error (RMSE)
+print("Nilai RMSE - Out of Sample")
+(rmse_test <- mean((test - bm)^2)^0.5)
+  
+  #Mean Absolute Percentage Error (MAPE) 
+print('Nilai MAPE - Out of Sample')
+(mape_test <- mean(abs((test - bm))/test))
+
+```
+
+# Identifikasi Model
+
+Uji ADF
+
+```{r ADF, warning=FALSE}
+#Uji ADF data training
+
+adf.test(train)
+
+```
+Hasil uji ADF memiliki p-value kecil dari 5% sehingga data disebut sudah stasioner dalam rataan.
+
+Grafik ACF
+
+```{r ACF train}
+#Grafik ACF data training
+
+acf(train, main = "Grafik ACF Data", lag.max = 49)
+```
+
+```{r Diferensi Musiman}
+#Diferensi Musiman
+train_diff_s <- diff(train, lag = 12)
+
+#Plot hasil diferensi
+plot(train_diff_s, lwd = 2, main = "Plot Data Diferensi Seasonal", type = "l")
+
+#Garis Rataan nilai hasil diferensi
+abline(h = mean(train_diff_s), lwd = 2, lty = 2, col = "red")
+```
+Data hasil diferensi musiman juga sudah tampak lebih stasioner. Akan dilakukan uji ADF dan plot ACF untuk melihat kestasionerannya lagi.
+
+```{r ADF diff, warning=FALSE}
+#ADF data hasil diferensi musiman
+adf.test(train_diff_s, k = 1)
+```
+
+p-value hasil uji ADF masih dibawah 5% sehingga data masih dikatakan stasioner.
+
+```{r ACF diff}
+#Plot ACF data hasil diferensi
+acf(train_diff_s, lag.max = 42,
+    main = "Grafik ACF Hasil Diferensi Musiman")
+
+```
+
+Maka dapat disimpulkan data hasil diferensi musiman sudah stasioner.
+
+```{r PACF iden}
+#Grafik PACF
+pacf(train_diff_s, main = "Grafik PACF Data Diferensi Musiman",
+     lag.max = 42)
+```
+
+Perhatikan bahwa terdapat cut-off pada grafik ACF setelah lag 1 dan cut-off pada grafik PACF setelah lag-2. Dengan demikian, calon model yang dapat ditentukan adalah:
+
+1.    $SARIMA(0,0,0) \times (2,1,1)_{12}$
+2.    $SARIMA(1,0,0) \times (2,1,1)_{12}$
+3.    $SARIMA(0,0,1) \times (2,1,1)_{12}$
+4.    $SARIMA(1,0,1) \times (2,1,1)_{12}$
+
+# Penaksiran Parameter Model
+
+Penaksiran Parameter Model-Model yang telah diperoleh
+
+```{r PP1}
+#Model SARIMA(0,0,0)x(2,1,1)_12
+mod_1 <- arima(train, order = c(0, 0, 0),
+               seasonal = list(order = c(2,1, 1), period = 12), method = "ML")
+
+mod_1
+```
+
+```{r PP2}
+#Model SARIMA(1,0,0)x(2,1,1)_12
+mod_2 <- arima(train, order = c(1, 0, 0),
+               seasonal = list(order = c(2,1, 1), period = 12), method = "ML")
+
+mod_2
+```
+
+```{r PP3}
+#Model SARIMA(0,0,1)x(2,1,1)_12
+mod_3 <- arima(train, order = c(0, 0, 1),
+               seasonal = list(order = c(2,1, 1), period = 12), method = "ML")
+
+mod_3
+```
+
+```{r PP4}
+#Model SARIMA(1,0,1)x(2,1,1)_12
+mod_4 <- arima(train, order = c(1, 0, 1), seasonal = list(order = c(2,
+1, 1), period = 12), method = "ML")
+
+mod_4
+```
+
+```{r PP5}
+#Model Auto
+mod_auto <- auto.arima(train, max.p = 4, max.q = 4, max.P = 4, max.Q = 4,
+                       seasonal = TRUE, stationary = FALSE, allowdrift = FALSE)
+
+mod_auto
+```
+Dipilih model $SARIMA(1,0,0)\times(2,1,1)_{12}$ karena memiliki nilai AIC yang rendah relatif terhadap model-model lainnya dan merupakan model yang cukup sederhana.
+
+# Uji Signifikansi Koefisien Parameter Model $SARIMA(1,0,0)\times(2,1,1)_{12}$
+
+```{r}
+coeftest(mod_2)
+```
+Perhatikan bahwa parameter untuk Seasonal MA 1 memiliki p-value lebih besar dari 5%, maka dari itu dapat dicoba menggunakan model $SARIMA(1,0,0)\times(2,1,0)_{12}$
+
+```{r}
+#Model SARIMA(1,0,0)x(2,1,0)_12
+mod_5 <- arima(train, order = c(1, 0, 0), seasonal = list(order = c(2,
+1, 0), period = 12), method = "ML")
+
+mod_5
+
+coeftest(mod_5)
+```
+Dengan ini diperoleh model $SARIMA(1,0,0)\times(2,1,0)_{12}$ dengan seluruh koefisien model signifikan. Nilai AIC juga cukup dekat dengan model sebelumnya.
+
+# Uji Diagnostik
+
+Uji Akurasi In-Sample
+```{r}
+accuracy(mod_5)
+```
+Perhatikan bahwa nilai RMSE dan MAPE dari model ini sudah lebih baik dari nilai pada base model (RMSE: 14534.88, MAPE: 0.05600996).
+
+Uji Ljung-Box
+```{r Ljung Box}
+checkresiduals(mod_5)
+```
+Dari uji Ljung-Box diperoleh p-value lebih besar dari 5%, sehingga dapat dikatakan residual model sudah saling bebas. Hal ini juga dapat dilihat pada grafik ACF residual; tidak ada yang berada diluar garis signifikansi kecuali pada lag 2 (hanya sedikit berada di luar). Dari plot residual tampak bahwa nilai residual tidak membentuk tren atau pola apapun. Dari histogram residual tampak persebaran residual cukup mengikuti distribusi normal dengan rataan disekitar 0. Normalitas residual akan diuji lebih lanjut.
+
+
+```{r residual}
+residuals <- residuals(mod_5)
+```
+
+```{r QQ Plot}
+qqnorm(residuals, main = "QQ Plot Residual")
+qqline(residuals, col = "red", lwd = 2)
+```
+
+```         
+Uji Kolmogorov-Smirnov
+```
+
+```{r Kolmogorov-Smirnov}
+ks.test(residuals, "pnorm", mean=mean(residuals), sd = sd(residuals) )
+
+```
+
+```         
+Uji Anderson-Darling
+```
+
+```{r Anderson-Darling}
+#Digunakan library nortest
+library(nortest)
+
+ad.test(residuals)
+```
+
+```         
+Uji Cramer-von-Mises
+```
+
+```{r Cramer-von-Mises}
+cvm.test(residuals)
+```
+
+```         
+Uji Jarque-Bera
+```
+
+```{r Jarque-Bera}
+jarque.bera.test(residuals)
+```
+
+```         
+Uji Shapiro-Wilk
+```
+
+```{r Shapiro-Wilk}
+shapiro.test(residuals)
+```
+Uji kenormalan menghasilkan kesimpulan bahwa residual model $SARIMA(1,0,0)\times(2,1,0)_{12}$ belum berdistribusi normal.
+
+# Uji Heteroskedastisitas
+
+```{r}
+resid2 <- residuals^2
+#Uji Box-Pierce
+Box.test(resid2, lag=12)
+
+#Uji Engle ARCH
+ArchTest(residuals)
+```
+Dapat dilihat dari uji autokorelasi Box-Pierce bahwa tidak ada autokorelasi residual yang signifikan. Dapat dilihat pada hasil uji heteroskedastisitas yang memiliki $H_0$ bahwa tidak terdapat efek heteroskedastik, memperoleh p-value lebih besar dari 5% sehingga $H_0$ tidak ditolak; tidak terdapat efek heteroskedastik. Dengan demikian, analisis data tidak perlu menggunakan model heteroskedastik.
+
+# Uji Akurasi Out-of-Sample
+
+```{r Testing}
+validation <- forecast(train, model = mod_5,
+                       h = length(test))
+
+actual <- as.vector(test) 
+
+ape_validation <- abs((as.vector(validation$mean) - actual)/actual) 
+
+print("MAPE Out-of-Sample")
+(mape_validation <- mean(ape_validation))
+
+print("RMSE Out-of-Sample")
+(rmse_validation <- mean((actual - validation$mean)^2)^0.5)
+```
+Perhatikan bahwa nilai MAPE dan RMSE out-of-sample model ini sudah lebih baik daripada nilai pada base model (MAPE: 0.1084152, RMSE: 30167.69)
+
+# Forecasting
+
+```{r forecast}
+fc <- forecast(ts(nocovid), model = mod_5, h = 12)
+summary (fc)
+```
+```{r}
+plot(fc,
+     main = "Prediksi Jumlah Kematian di AS Tahun 2020 tanpa Pengaruh Covid-19",
+     ylab = "Jumlah Kematian", xlab = "Bulan")
+```
+# Analisis Pengaruh Covid-19
+
+Dengan menganggap bahwa nilai prediksi yang telah diperoleh merupakan kematian "natural" pada tahun 2020, maka dapat dicari jumlah kematian yang diakibatkan oleh Covid-19. 
+
+Plot prediksi kematian "natural" dan jumlah kematian sebenarnya
+
+```{r}
+plot(data$Deaths[253: 264], xlab = "Bulan", ylab = "Jumlah Kematian",
+     main = "Jumlah Kematian Prediksi (Natural) dan Aktual di AS \n Tahun 2020",
+     type = "l", col = 2, ylim = c(220000, 400000), xaxt = "n", lwd = 2)
+
+lines(as.numeric(fc$mean), type = "l", col = 3, lwd = 2)
+
+legend("topleft", c("Aktual", "Prediksi (Natural)"), lty = 1, col = 2:3,
+       cex = 0.7)
+
+axis(1,
+     at = seq(1, 12, 1),
+     labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                "Sep", "Oct", "Nov", "Dec"))
+
+abline(h = pretty(range(data$Deaths)), col = "lightgray", lty = "dotted")
+
+abline(v = 1:12, col = "lightgray", lty = "dotted")
+```
+
+
+```{r}
+coviddeaths <- data$Deaths[253: 264] - as.numeric(fc$mean)
+months <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+            "Sep", "Oct", "Nov", "Dec")
+
+(coviddeaths)
+
+barplot(coviddeaths, names.arg= months,
+        main = "Jumlah Kenaikan Kematian oleh Covid-19 di AS \n Tahun 2020",
+        lwd = 2, ylab = "Jumlah Kematian", xlab = "Bulan",
+        col = c("green", rep("red", 11)))
+```
+```{r}
+sum(coviddeaths)
+```
+```{r}
+summary(coviddeaths)
+```
+Bandingkan dengan data kematian terkonfirmasi
+
+```{r}
+confdeath <- read_excel("daily-new-confirmed-covid-19-deaths.xlsx")
+realdeaths <- confdeath$`Monthly New Confirmed Deaths due to COVID 19`
+
+
+plot(coviddeaths, xlab = "Bulan", ylab = "Jumlah Kematian",
+     main = "Jumlah Kematian Akibat Covid-19 Prediksi vs Aktual di AS
+     \n Tahun 2020",
+     type = "l", col = 2, xaxt = "n", lwd = 2)
+
+lines(as.numeric(realdeaths), type = "l", col = 3, lwd = 2)
+
+legend("topleft", c("Prediksi", "Aktual"), lty = 1, col = 2:3,
+       cex = 0.7)
+
+axis(1,
+     at = seq(1, 12, 1),
+     labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                "Sep", "Oct", "Nov", "Dec"))
+
+abline(h = pretty(range(data$Deaths)), col = "lightgray", lty = "dotted")
+
+abline(v = 1:12, col = "lightgray", lty = "dotted")
+```
+
+Residual Kematian Terkonfirmasi Covid-19
+
+```{r}
+realresid <- realdeaths - coviddeaths
+plot(realresid, type = "l",
+     main = "Plot Residual Prediksi Kematian Covid-19 di AS \n Tahun 2020",
+     xaxt = "n", xlab = "Bulan", ylab = "Residual")
+
+axis(1,
+     at = seq(1, 12, 1),
+     labels = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+                "Sep", "Oct", "Nov", "Dec"))
+
+abline(h = pretty(range(data$Deaths)), col = "lightgray", lty = "dotted")
+
+abline(v = 1:12, col = "lightgray", lty = "dotted")
+```
+
